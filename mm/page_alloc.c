@@ -965,11 +965,6 @@ static int fallbacks[MIGRATE_TYPES][4] = {
 #endif
 };
 
-int *get_migratetype_fallbacks(int mtype)
-{
-	return fallbacks[mtype];
-}
-
 /*
  * Move the free pages in a range to the free lists of the requested type.
  * Note that start_page and end_pages are not aligned on a pageblock
@@ -5311,8 +5306,8 @@ unsigned long free_reserved_area(unsigned long start, unsigned long end,
 	}
 
 	if (pages && s)
-		pr_info("Freeing %s memory: %ldK (%lx - %lx)\n",
-			s, pages << (PAGE_SHIFT - 10), start, end);
+		pr_info("Freeing %s memory: %ldK\n",
+			s, pages << (PAGE_SHIFT - 10));
 
 	return pages;
 }

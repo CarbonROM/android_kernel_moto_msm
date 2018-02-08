@@ -818,7 +818,6 @@
 };
 
 &i2c_0 {
-	qcom,extended-recovery = <2>;
 	qcom,i2c-bus-freq = <100000>;
 	qcom,i2c-src-freq = <19200000>;
 
@@ -957,8 +956,6 @@
 };
 
 &i2c_1 {
-	qcom,extended-recovery = <2>;
-
 	synaptics@20 {
 		compatible = "synaptics,rmi4";
 		reg = <0x20>;
@@ -1036,8 +1033,6 @@
 };
 
 &i2c_2 {
-	qcom,extended-recovery = <2>;
-
 	isa1200@48 {
 		status = "okay";
 		reg = <0x48>;
@@ -1061,8 +1056,6 @@
 };
 
 &i2c_8 {
-	qcom,extended-recovery = <2>;
-
 	tpa6165xx@40 {
 		compatible = "ti,tpa6165";
 		reg = <0x40>;
