@@ -1202,6 +1202,27 @@ static int cpufreq_nominate_new_policy_cpu(struct cpufreq_policy *policy,
 	return cpu_dev->id;
 }
 
+#ifdef CONFIG_HOTPLUG_CPU
+static void update_related_cpus(struct cpufreq_policy *policy)
+{
+	unsigned int j;
+
+	for_each_cpu(j, policy->related_cpus) {
+		if (!cpufreq_driver->setpolicy)
+			strlcpy(per_cpu(cpufreq_policy_save, j).gov,
+				policy->governor->name, CPUFREQ_NAME_LEN);
+		per_cpu(cpufreq_policy_save, j).min = policy->user_policy.min;
+		per_cpu(cpufreq_policy_save, j).max = policy->user_policy.max;
+		pr_debug("Saving CPU%d user policy min %d and max %d\n",
+		 j, policy->user_policy.min, policy->user_policy.max);
+	}
+}
+#else
+static void update_related_cpus(struct cpufreq_policy *policy)
+{
+}
+#endif
+
 static int __cpufreq_remove_dev_prepare(struct device *dev,
 					struct subsys_interface *sif,
 					bool frozen)
@@ -1237,19 +1258,12 @@ static int __cpufreq_remove_dev_prepare(struct device *dev,
 		}
 	}
 
-#ifdef CONFIG_HOTPLUG_CPU
-	if (!cpufreq_driver->setpolicy)
-		strlcpy(per_cpu(cpufreq_policy_save, cpu).gov,
-			policy->governor->name, CPUFREQ_NAME_LEN);
-	per_cpu(cpufreq_policy_save, cpu).min = policy->user_policy.min;
-	per_cpu(cpufreq_policy_save, cpu).max = policy->user_policy.max;
-	pr_debug("Saving CPU%d user policy min %d and max %d\n",
-		 cpu, policy->user_policy.min, policy->user_policy.max);
-#endif
-
 	down_read(&policy->rwsem);
 	cpus = cpumask_weight(policy->cpus);
 	up_read(&policy->rwsem);
+
+	if (cpus == 1)
+		update_related_cpus(policy);
 
 	if (cpu != policy->cpu) {
 		sysfs_remove_link(&dev->kobj, "cpufreq");
@@ -1277,10 +1291,10 @@ static int __cpufreq_remove_dev_finish(struct device *dev,
 	unsigned long flags;
 	struct cpufreq_policy *policy;
 
-	read_lock_irqsave(&cpufreq_driver_lock, flags);
+	write_lock_irqsave(&cpufreq_driver_lock, flags);
 	policy = per_cpu(cpufreq_cpu_data, cpu);
 	per_cpu(cpufreq_cpu_data, cpu) = NULL;
-	read_unlock_irqrestore(&cpufreq_driver_lock, flags);
+	write_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
 	if (!policy) {
 		pr_debug("%s: No cpu_data found\n", __func__);
@@ -1446,11 +1460,16 @@ EXPORT_SYMBOL(cpufreq_quick_get_max);
 
 static unsigned int __cpufreq_get(unsigned int cpu)
 {
-	struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
+	struct cpufreq_policy *policy;
 	unsigned int ret_freq = 0;
+	unsigned long flags;
 
 	if (!cpufreq_driver->get)
 		return ret_freq;
+
+	read_lock_irqsave(&cpufreq_driver_lock, flags);
+	policy = per_cpu(cpufreq_cpu_data, cpu);
+	read_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
 	ret_freq = cpufreq_driver->get(cpu);
 
@@ -1475,11 +1494,16 @@ static unsigned int __cpufreq_get(unsigned int cpu)
  */
 unsigned int cpufreq_get(unsigned int cpu)
 {
-	struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
+	struct cpufreq_policy *policy;
 	unsigned int ret_freq = 0;
+	unsigned long flags;
 
 	if (cpufreq_disabled() || !cpufreq_driver)
 		return -ENOENT;
+
+	read_lock_irqsave(&cpufreq_driver_lock, flags);
+	policy = per_cpu(cpufreq_cpu_data, cpu);
+	read_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
 	BUG_ON(!policy);
 
