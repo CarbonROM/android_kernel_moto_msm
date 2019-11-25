@@ -39,6 +39,7 @@
 #include <linux/msm_thermal_ioctl.h>
 #include <soc/qcom/rpm-smd.h>
 #include <soc/qcom/scm.h>
+#include <linux/sched/rt.h>
 
 #define MAX_RAILS 5
 #define MAX_THRESHOLD 2
@@ -1130,12 +1131,14 @@ static __ref int do_hotplug(void *data)
 {
 	int ret = 0;
 	uint32_t cpu = 0, mask = 0;
+	struct sched_param param = {.sched_priority = MAX_RT_PRIO-2};
 
 	if (!core_control_enabled) {
 		pr_debug("Core control disabled\n");
 		return -EINVAL;
 	}
 
+	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&hotplug_notify_complete) != 0)
@@ -1507,7 +1510,8 @@ static int hotplug_notify(enum thermal_trip_type type, int temp, void *data)
 {
 	struct cpu_info *cpu_node = (struct cpu_info *)data;
 
-	pr_info("%s reach temp threshold: %d\n", cpu_node->sensor_type, temp);
+	pr_info_ratelimited("%s reach temp threshold: %d\n",
+			       cpu_node->sensor_type, temp);
 
 	if (!(msm_thermal_info.core_control_mask & BIT(cpu_node->cpu)))
 		return 0;
@@ -1618,7 +1622,9 @@ static __ref int do_freq_mitigation(void *data)
 {
 	int ret = 0;
 	uint32_t cpu = 0, max_freq_req = 0, min_freq_req = 0;
+	struct sched_param param = {.sched_priority = MAX_RT_PRIO-1};
 
+	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&freq_mitigation_complete) != 0)
@@ -1673,16 +1679,17 @@ static int freq_mitigation_notify(enum thermal_trip_type type,
 	switch (type) {
 	case THERMAL_TRIP_CONFIGURABLE_HI:
 		if (!cpu_node->max_freq) {
-			pr_info("Mitigating CPU%d frequency to %d\n",
-				cpu_node->cpu,
-				msm_thermal_info.freq_limit);
+			pr_info_ratelimited(
+				"Mitigating CPU%d frequency to %d\n",
+				cpu_node->cpu, msm_thermal_info.freq_limit);
 
 			cpu_node->max_freq = true;
 		}
 		break;
 	case THERMAL_TRIP_CONFIGURABLE_LOW:
 		if (cpu_node->max_freq) {
-			pr_info("Removing frequency mitigation for CPU%d\n",
+			pr_info_ratelimited(
+				"Removing frequency mitigation for CPU%d\n",
 				cpu_node->cpu);
 
 			cpu_node->max_freq = false;
@@ -3341,6 +3348,9 @@ int __init msm_thermal_device_init(void)
 
 int __init msm_thermal_late_init(void)
 {
+	if (!msm_thermal_probed)
+		return 0;
+
 	if (num_possible_cpus() > 1)
 		msm_thermal_add_cc_nodes();
 	msm_thermal_add_psm_nodes();

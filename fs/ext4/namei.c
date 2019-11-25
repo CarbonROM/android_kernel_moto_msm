@@ -121,10 +121,10 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	if (!is_dx_block && type == INDEX) {
 		ext4_error_inode(inode, __func__, line, block,
 		       "directory leaf block found instead of index block");
+		brelse(bh);
 		return ERR_PTR(-EIO);
 	}
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM) ||
+	if (!ext4_has_metadata_csum(inode->i_sb) ||
 	    buffer_verified(bh))
 		return bh;
 
@@ -339,8 +339,7 @@ int ext4_dirent_csum_verify(struct inode *inode, struct ext4_dir_entry *dirent)
 {
 	struct ext4_dir_entry_tail *t;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(inode->i_sb))
 		return 1;
 
 	t = get_dirent_tail(inode, dirent);
@@ -361,8 +360,7 @@ static void ext4_dirent_csum_set(struct inode *inode,
 {
 	struct ext4_dir_entry_tail *t;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(inode->i_sb))
 		return;
 
 	t = get_dirent_tail(inode, dirent);
@@ -436,8 +434,7 @@ static int ext4_dx_csum_verify(struct inode *inode,
 	struct dx_tail *t;
 	int count_offset, limit, count;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(inode->i_sb))
 		return 1;
 
 	c = get_dx_countlimit(inode, dirent, &count_offset);
@@ -466,8 +463,7 @@ static void ext4_dx_csum_set(struct inode *inode, struct ext4_dir_entry *dirent)
 	struct dx_tail *t;
 	int count_offset, limit, count;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(inode->i_sb))
 		return;
 
 	c = get_dx_countlimit(inode, dirent, &count_offset);
@@ -555,8 +551,7 @@ static inline unsigned dx_root_limit(struct inode *dir, unsigned infosize)
 	unsigned entry_space = dir->i_sb->s_blocksize - EXT4_DIR_REC_LEN(1) -
 		EXT4_DIR_REC_LEN(2) - infosize;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(dir->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(dir->i_sb))
 		entry_space -= sizeof(struct dx_tail);
 	return entry_space / sizeof(struct dx_entry);
 }
@@ -565,8 +560,7 @@ static inline unsigned dx_node_limit(struct inode *dir)
 {
 	unsigned entry_space = dir->i_sb->s_blocksize - EXT4_DIR_REC_LEN(0);
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(dir->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(dir->i_sb))
 		entry_space -= sizeof(struct dx_tail);
 	return entry_space / sizeof(struct dx_entry);
 }
@@ -1266,8 +1260,13 @@ static struct buffer_head * ext4_find_entry (struct inode *dir,
 			return bh;
 		dxtrace(printk(KERN_DEBUG "ext4_find_entry: dx failed, "
 			       "falling back\n"));
+		ret = NULL;
 	}
 	nblocks = dir->i_size >> EXT4_BLOCK_SIZE_BITS(sb);
+	if (!nblocks) {
+		ret = NULL;
+		goto cleanup_and_exit;
+	}
 	start = EXT4_I(dir)->i_dir_start_lookup;
 	if (start >= nblocks)
 		start = 0;
@@ -1534,8 +1533,7 @@ static struct ext4_dir_entry_2 *do_split(handle_t *handle, struct inode *dir,
 	int	csum_size = 0;
 	int	err = 0, i;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(dir->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(dir->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	bh2 = ext4_append(handle, dir, &newblock);
@@ -1704,8 +1702,7 @@ static int add_dirent_to_buf(handle_t *handle, struct dentry *dentry,
 	int		csum_size = 0;
 	int		err;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(inode->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	if (!de) {
@@ -1772,8 +1769,7 @@ static int make_indexed_dir(handle_t *handle, struct dentry *dentry,
 	struct fake_dirent *fde;
 	int		csum_size = 0;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(inode->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	blocksize =  dir->i_sb->s_blocksize;
@@ -1879,7 +1875,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 			  struct inode *inode)
 {
 	struct inode *dir = dentry->d_parent->d_inode;
-	struct buffer_head *bh;
+	struct buffer_head *bh = NULL;
 	struct ext4_dir_entry_2 *de;
 	struct ext4_dir_entry_tail *t;
 	struct super_block *sb;
@@ -1889,8 +1885,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 	ext4_lblk_t block, blocks;
 	int	csum_size = 0;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(inode->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	sb = dir->i_sb;
@@ -1904,14 +1899,14 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 			return retval;
 		if (retval == 1) {
 			retval = 0;
-			return retval;
+			goto out;
 		}
 	}
 
 	if (is_dx(dir)) {
 		retval = ext4_dx_add_entry(handle, dentry, inode);
 		if (!retval || (retval != ERR_BAD_DX_DIR))
-			return retval;
+			goto out;
 		ext4_clear_inode_flag(dir, EXT4_INODE_INDEX);
 		dx_fallback++;
 		ext4_mark_inode_dirty(handle, dir);
@@ -1923,14 +1918,15 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 			return PTR_ERR(bh);
 
 		retval = add_dirent_to_buf(handle, dentry, inode, NULL, bh);
-		if (retval != -ENOSPC) {
-			brelse(bh);
-			return retval;
-		}
+		if (retval != -ENOSPC)
+			goto out;
 
 		if (blocks == 1 && !dx_fallback &&
-		    EXT4_HAS_COMPAT_FEATURE(sb, EXT4_FEATURE_COMPAT_DIR_INDEX))
-			return make_indexed_dir(handle, dentry, inode, bh);
+		    EXT4_HAS_COMPAT_FEATURE(sb, EXT4_FEATURE_COMPAT_DIR_INDEX)) {
+			retval = make_indexed_dir(handle, dentry, inode, bh);
+			bh = NULL; /* make_indexed_dir releases bh */
+			goto out;
+		}
 		brelse(bh);
 	}
 	bh = ext4_append(handle, dir, &block);
@@ -1946,6 +1942,7 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 	}
 
 	retval = add_dirent_to_buf(handle, dentry, inode, de, bh);
+out:
 	brelse(bh);
 	if (retval == 0)
 		ext4_set_inode_state(inode, EXT4_STATE_NEWENTRY);
@@ -2152,8 +2149,7 @@ static int ext4_delete_entry(handle_t *handle,
 			return err;
 	}
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(dir->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(dir->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	BUFFER_TRACE(bh, "get_write_access");
@@ -2372,8 +2368,7 @@ static int ext4_init_new_dir(handle_t *handle, struct inode *dir,
 	int csum_size = 0;
 	int err;
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(dir->i_sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(dir->i_sb))
 		csum_size = sizeof(struct ext4_dir_entry_tail);
 
 	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA)) {

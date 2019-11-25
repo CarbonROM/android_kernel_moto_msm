@@ -1983,7 +1983,7 @@ extern ext4_group_t ext4_get_group_number(struct super_block *sb,
 
 extern void ext4_validate_block_bitmap(struct super_block *sb,
 				       struct ext4_group_desc *desc,
-				       unsigned int block_group,
+				       ext4_group_t block_group,
 				       struct buffer_head *bh);
 extern unsigned int ext4_block_group(struct super_block *sb,
 			ext4_fsblk_t blocknr);
@@ -2180,6 +2180,8 @@ extern int ext4_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf);
 extern qsize_t *ext4_get_reserved_space(struct inode *inode);
 extern void ext4_da_update_reserve_space(struct inode *inode,
 					int used, int quota_claim);
+extern int ext4_issue_zeroout(struct inode *inode, ext4_lblk_t lblk,
+			      ext4_fsblk_t pblk, ext4_lblk_t len);
 
 /* indirect.c */
 extern int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
@@ -2188,10 +2190,10 @@ extern ssize_t ext4_ind_direct_IO(int rw, struct kiocb *iocb,
 				const struct iovec *iov, loff_t offset,
 				unsigned long nr_segs);
 extern int ext4_ind_calc_metadata_amount(struct inode *inode, sector_t lblock);
-extern int ext4_ind_trans_blocks(struct inode *inode, int nrblocks, int chunk);
+extern int ext4_ind_trans_blocks(struct inode *inode, int nrblocks);
 extern void ext4_ind_truncate(handle_t *, struct inode *inode);
-extern int ext4_free_hole_blocks(handle_t *handle, struct inode *inode,
-				 ext4_lblk_t first, ext4_lblk_t stop);
+extern int ext4_ind_remove_space(handle_t *handle, struct inode *inode,
+				 ext4_lblk_t start, ext4_lblk_t end);
 
 /* ioctl.c */
 extern long ext4_ioctl(struct file *, unsigned int, unsigned long);
@@ -2383,6 +2385,14 @@ static inline int ext4_has_group_desc_csum(struct super_block *sb)
 	       (EXT4_SB(sb)->s_chksum_driver != NULL);
 }
 
+static inline int ext4_has_metadata_csum(struct super_block *sb)
+{
+	WARN_ON_ONCE(EXT4_HAS_RO_COMPAT_FEATURE(sb,
+			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM) &&
+		     !EXT4_SB(sb)->s_chksum_driver);
+
+	return (EXT4_SB(sb)->s_chksum_driver != NULL);
+}
 static inline ext4_fsblk_t ext4_blocks_count(struct ext4_super_block *es)
 {
 	return ((ext4_fsblk_t)le32_to_cpu(es->s_blocks_count_hi) << 32) |

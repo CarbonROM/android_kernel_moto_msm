@@ -88,8 +88,7 @@ static int ext4_inode_csum_verify(struct inode *inode, struct ext4_inode *raw,
 
 	if (EXT4_SB(inode->i_sb)->s_es->s_creator_os !=
 	    cpu_to_le32(EXT4_OS_LINUX) ||
-	    !EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-		EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	    !ext4_has_metadata_csum(inode->i_sb))
 		return 1;
 
 	provided = le16_to_cpu(raw->i_checksum_lo);
@@ -110,8 +109,7 @@ static void ext4_inode_csum_set(struct inode *inode, struct ext4_inode *raw,
 
 	if (EXT4_SB(inode->i_sb)->s_es->s_creator_os !=
 	    cpu_to_le32(EXT4_OS_LINUX) ||
-	    !EXT4_HAS_RO_COMPAT_FEATURE(inode->i_sb,
-		EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	    !ext4_has_metadata_csum(inode->i_sb))
 		return;
 
 	csum = ext4_inode_csum(inode, raw, ei);
@@ -424,6 +422,18 @@ static int __check_block_validity(struct inode *inode, const char *func,
 		return -EIO;
 	}
 	return 0;
+}
+
+int ext4_issue_zeroout(struct inode *inode, ext4_lblk_t lblk, ext4_fsblk_t pblk,
+		       ext4_lblk_t len)
+{
+	int ret;
+
+	ret = sb_issue_zeroout(inode->i_sb, pblk, len, GFP_NOFS);
+	if (ret > 0)
+		ret = 0;
+
+	return ret;
 }
 
 #define check_block_validity(inode, map)	\
@@ -1051,7 +1061,8 @@ retry_journal:
 		ext4_journal_stop(handle);
 		goto retry_grab;
 	}
-	wait_on_page_writeback(page);
+	/* In case writeback began while the page was unlocked */
+	wait_for_stable_page(page);
 
 	if (ext4_should_dioread_nolock(inode))
 		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
@@ -2763,7 +2774,7 @@ retry_journal:
 		goto retry_grab;
 	}
 	/* In case writeback began while the page was unlocked */
-	wait_on_page_writeback(page);
+	wait_for_stable_page(page);
 
 	ret = __block_write_begin(page, pos, len, ext4_da_get_block_prep);
 	if (ret < 0) {
@@ -3795,7 +3806,7 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 		ret = ext4_ext_remove_space(inode, first_block,
 					    stop_block - 1);
 	else
-		ret = ext4_free_hole_blocks(handle, inode, first_block,
+		ret = ext4_ind_remove_space(handle, inode, first_block,
 					    stop_block);
 
 	ext4_discard_preallocations(inode);
@@ -4251,8 +4262,7 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 		ei->i_extra_isize = 0;
 
 	/* Precompute checksum seed for inode metadata */
-	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
-			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
+	if (ext4_has_metadata_csum(sb)) {
 		struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 		__u32 csum;
 		__le32 inum = cpu_to_le32(inode->i_ino);
@@ -4925,7 +4935,7 @@ int ext4_getattr(struct vfsmount *mnt, struct dentry *dentry,
 static int ext4_index_trans_blocks(struct inode *inode, int nrblocks, int chunk)
 {
 	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)))
-		return ext4_ind_trans_blocks(inode, nrblocks, chunk);
+		return ext4_ind_trans_blocks(inode, nrblocks);
 	return ext4_ext_index_trans_blocks(inode, nrblocks, chunk);
 }
 

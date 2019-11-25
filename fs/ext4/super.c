@@ -139,8 +139,7 @@ static __le32 ext4_superblock_csum(struct super_block *sb,
 int ext4_superblock_csum_verify(struct super_block *sb,
 				struct ext4_super_block *es)
 {
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return 1;
 
 	return es->s_checksum == ext4_superblock_csum(sb, es);
@@ -150,8 +149,7 @@ void ext4_superblock_csum_set(struct super_block *sb)
 {
 	struct ext4_super_block *es = EXT4_SB(sb)->s_es;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-		EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return;
 
 	es->s_checksum = ext4_superblock_csum(sb, es);
@@ -443,12 +441,14 @@ void __ext4_error_inode(struct inode *inode, const char *function,
 	vaf.fmt = fmt;
 	vaf.va = &args;
 	if (block)
-		printk(KERN_CRIT "EXT4-fs error (device %s): %s:%d: "
+		printk_ratelimited(
+			KERN_CRIT "EXT4-fs error (device %s): %s:%d: "
 		       "inode #%lu: block %llu: comm %s: %pV\n",
 		       inode->i_sb->s_id, function, line, inode->i_ino,
 		       block, current->comm, &vaf);
 	else
-		printk(KERN_CRIT "EXT4-fs error (device %s): %s:%d: "
+		printk_ratelimited(
+			KERN_CRIT "EXT4-fs error (device %s): %s:%d: "
 		       "inode #%lu: comm %s: %pV\n",
 		       inode->i_sb->s_id, function, line, inode->i_ino,
 		       current->comm, &vaf);
@@ -994,6 +994,16 @@ static struct dentry *ext4_fh_to_parent(struct super_block *sb, struct fid *fid,
 				    ext4_nfs_get_inode);
 }
 
+static int ext4_nfs_commit_metadata(struct inode *inode)
+{
+	struct writeback_control wbc = {
+		.sync_mode = WB_SYNC_ALL
+	};
+
+	trace_ext4_nfs_commit_metadata(inode);
+	return ext4_write_inode(inode, &wbc);
+}
+
 /*
  * Try to release metadata pages (indirect blocks, directories) which are
  * mapped via the block device.  Since these pages could have journal heads
@@ -1113,6 +1123,7 @@ static const struct export_operations ext4_export_ops = {
 	.fh_to_dentry = ext4_fh_to_dentry,
 	.fh_to_parent = ext4_fh_to_parent,
 	.get_parent = ext4_get_parent,
+	.commit_metadata = ext4_nfs_commit_metadata,
 };
 
 enum {
@@ -1936,8 +1947,7 @@ static __le16 ext4_group_desc_csum(struct ext4_sb_info *sbi, __u32 block_group,
 	__u16 crc = 0;
 	__le32 le_group = cpu_to_le32(block_group);
 
-	if ((sbi->s_es->s_feature_ro_compat &
-	     cpu_to_le32(EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))) {
+	if (ext4_has_metadata_csum(sbi->s_sb)) {
 		/* Use new metadata_csum algorithm */
 		__u32 csum32;
 		__u16 dummy_csum = 0;
@@ -2004,6 +2014,7 @@ static int ext4_check_descriptors(struct super_block *sb,
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	ext4_fsblk_t first_block = le32_to_cpu(sbi->s_es->s_first_data_block);
 	ext4_fsblk_t last_block;
+	ext4_fsblk_t last_bg_block = sb_block + ext4_bg_num_gdb(sb, 0) + 1;
 	ext4_fsblk_t block_bitmap;
 	ext4_fsblk_t inode_bitmap;
 	ext4_fsblk_t inode_table;
@@ -2034,6 +2045,14 @@ static int ext4_check_descriptors(struct super_block *sb,
 				 "Block bitmap for group %u overlaps "
 				 "superblock", i);
 		}
+		if (block_bitmap >= sb_block + 1 &&
+		    block_bitmap <= last_bg_block) {
+			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
+				 "Block bitmap for group %u overlaps "
+				 "block group descriptors", i);
+			if (!(sb->s_flags & MS_RDONLY))
+				return 0;
+		}
 		if (block_bitmap < first_block || block_bitmap > last_block) {
 			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
 			       "Block bitmap for group %u not in group "
@@ -2046,6 +2065,14 @@ static int ext4_check_descriptors(struct super_block *sb,
 				 "Inode bitmap for group %u overlaps "
 				 "superblock", i);
 		}
+		if (inode_bitmap >= sb_block + 1 &&
+		    inode_bitmap <= last_bg_block) {
+			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
+				 "Inode bitmap for group %u overlaps "
+				 "block group descriptors", i);
+			if (!(sb->s_flags & MS_RDONLY))
+				return 0;
+		}
 		if (inode_bitmap < first_block || inode_bitmap > last_block) {
 			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
 			       "Inode bitmap for group %u not in group "
@@ -2057,6 +2084,14 @@ static int ext4_check_descriptors(struct super_block *sb,
 			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
 				 "Inode table for group %u overlaps "
 				 "superblock", i);
+		}
+		if (inode_table >= sb_block + 1 &&
+		    inode_table <= last_bg_block) {
+			ext4_msg(sb, KERN_ERR, "ext4_check_descriptors: "
+				 "Inode table for group %u overlaps "
+				 "block group descriptors", i);
+			if (!(sb->s_flags & MS_RDONLY))
+				return 0;
 		}
 		if (inode_table < first_block ||
 		    inode_table + sbi->s_itb_per_group - 1 > last_block) {
@@ -2962,14 +2997,8 @@ static ext4_group_t ext4_has_uninit_itable(struct super_block *sb)
 		if (!gdp)
 			continue;
 
-		if (gdp->bg_flags & cpu_to_le16(EXT4_BG_INODE_ZEROED))
-			continue;
-		if (group != 0)
+		if (!(gdp->bg_flags & cpu_to_le16(EXT4_BG_INODE_ZEROED)))
 			break;
-		ext4_error(sb, "Inode table for bg 0 marked as "
-			   "needing zeroing");
-		if (sb->s_flags & MS_RDONLY)
-			return ngroups;
 	}
 
 	return group;
@@ -2998,7 +3027,6 @@ static struct ext4_li_request *ext4_li_request_new(struct super_block *sb,
 {
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct ext4_li_request *elr;
-	unsigned long rnd;
 
 	elr = kzalloc(sizeof(*elr), GFP_KERNEL);
 	if (!elr)
@@ -3013,10 +3041,8 @@ static struct ext4_li_request *ext4_li_request_new(struct super_block *sb,
 	 * spread the inode table initialization requests
 	 * better.
 	 */
-	get_random_bytes(&rnd, sizeof(rnd));
-	elr->lr_next_sched = jiffies + (unsigned long)rnd %
-			     (EXT4_DEF_LI_MAX_START_DELAY * HZ);
-
+	elr->lr_next_sched = jiffies + (prandom_u32() %
+				(EXT4_DEF_LI_MAX_START_DELAY * HZ));
 	return elr;
 }
 
@@ -3101,8 +3127,7 @@ static int set_journal_csum_feature_set(struct super_block *sb)
 	int compat, incompat;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
-				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
+	if (ext4_has_metadata_csum(sb)) {
 		/* journal checksum v2 */
 		compat = 0;
 		incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
@@ -3411,8 +3436,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	/* Precompute checksum seed for all metadata */
-	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
-			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (ext4_has_metadata_csum(sb))
 		sbi->s_csum_seed = ext4_chksum(sbi, ~0, es->s_uuid,
 					       sizeof(es->s_uuid));
 
@@ -3564,6 +3588,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			 le32_to_cpu(es->s_log_block_size));
 		goto failed_mount;
 	}
+	if (le32_to_cpu(es->s_log_cluster_size) >
+	    (EXT4_MAX_CLUSTER_LOG_SIZE - EXT4_MIN_BLOCK_LOG_SIZE)) {
+		ext4_msg(sb, KERN_ERR,
+			 "Invalid log cluster size: %u",
+			 le32_to_cpu(es->s_log_cluster_size));
+		goto failed_mount;
+	}
 
 	if (sb->s_blocksize != blocksize) {
 		/* Validate the filesystem blocksize */
@@ -3685,13 +3716,6 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 				 "block size (%d)", clustersize, blocksize);
 			goto failed_mount;
 		}
-		if (le32_to_cpu(es->s_log_cluster_size) >
-		    (EXT4_MAX_CLUSTER_LOG_SIZE - EXT4_MIN_BLOCK_LOG_SIZE)) {
-			ext4_msg(sb, KERN_ERR,
-				 "Invalid log cluster size: %u",
-				 le32_to_cpu(es->s_log_cluster_size));
-			goto failed_mount;
-		}
 		sbi->s_cluster_bits = le32_to_cpu(es->s_log_cluster_size) -
 			le32_to_cpu(es->s_log_block_size);
 		sbi->s_clusters_per_group =
@@ -3712,10 +3736,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		}
 	} else {
 		if (clustersize != blocksize) {
-			ext4_warning(sb, "fragment/cluster size (%d) != "
-				     "block size (%d)", clustersize,
-				     blocksize);
-			clustersize = blocksize;
+			ext4_msg(sb, KERN_ERR,
+				 "fragment/cluster size (%d) != "
+				 "block size (%d)", clustersize, blocksize);
+			goto failed_mount;
 		}
 		if (sbi->s_blocks_per_group > blocksize * 8) {
 			ext4_msg(sb, KERN_ERR,
@@ -3769,6 +3793,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			 ext4_blocks_count(es));
 		goto failed_mount;
 	}
+	if ((es->s_first_data_block == 0) && (es->s_log_block_size == 0) &&
+	    (sbi->s_cluster_ratio == 1)) {
+		ext4_msg(sb, KERN_WARNING, "bad geometry: first data "
+			 "block is 0 with a 1k block and cluster size");
+		goto failed_mount;
+	}
+
 	blocks_count = (ext4_blocks_count(es) -
 			le32_to_cpu(es->s_first_data_block) +
 			EXT4_BLOCKS_PER_GROUP(sb) - 1);
@@ -3785,6 +3816,14 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->s_groups_count = blocks_count;
 	sbi->s_blockfile_groups = min_t(ext4_group_t, sbi->s_groups_count,
 			(EXT4_MAX_BLOCK_FILE_PHYS / EXT4_BLOCKS_PER_GROUP(sb)));
+	if (((u64)sbi->s_groups_count * sbi->s_inodes_per_group) !=
+	    le32_to_cpu(es->s_inodes_count)) {
+		ext4_msg(sb, KERN_ERR, "inodes count not valid: %u vs %llu",
+			 le32_to_cpu(es->s_inodes_count),
+			 ((u64)sbi->s_groups_count * sbi->s_inodes_per_group));
+		ret = -EINVAL;
+		goto failed_mount;
+	}
 	db_count = (sbi->s_groups_count + EXT4_DESC_PER_BLOCK(sb) - 1) /
 		   EXT4_DESC_PER_BLOCK(sb);
 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_META_BG)) {
@@ -4457,6 +4496,14 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 
 	if (!sbh || block_device_ejected(sb))
 		return error;
+
+	/*
+	 * The superblock bh should be mapped, but it might not be if the
+	 * device was hot-removed. Not much we can do but fail the I/O.
+	 */
+	if (!buffer_mapped(sbh))
+		return error;
+
 	/*
 	 * If the file system is mounted read-only, don't update the
 	 * superblock write time.  This avoids updating the superblock
@@ -5143,9 +5190,9 @@ static int ext4_quota_enable(struct super_block *sb, int type, int format_id,
 	qf_inode->i_flags |= S_NOQUOTA;
 	lockdep_set_quota_inode(qf_inode, I_DATA_SEM_QUOTA);
 	err = dquot_enable(qf_inode, type, format_id, flags);
-	iput(qf_inode);
 	if (err)
 		lockdep_set_quota_inode(qf_inode, I_DATA_SEM_NORMAL);
+	iput(qf_inode);
 
 	return err;
 }

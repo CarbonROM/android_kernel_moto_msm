@@ -413,7 +413,7 @@ static int find_group_orlov(struct super_block *sb, struct inode *parent,
 			ext4fs_dirhash(qstr->name, qstr->len, &hinfo);
 			grp = hinfo.hash;
 		} else
-			get_random_bytes(&grp, sizeof(grp));
+			grp = prandom_u32();
 		parent_group = (unsigned)grp % ngroups;
 		for (i = 0; i < ngroups; i++) {
 			g = (parent_group + i) % ngroups;
@@ -909,8 +909,7 @@ got:
 	spin_unlock(&sbi->s_next_gen_lock);
 
 	/* Precompute checksum seed for inode metadata */
-	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
-			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
+	if (ext4_has_metadata_csum(sb)) {
 		__u32 csum;
 		__le32 inum = cpu_to_le32(inode->i_ino);
 		__le32 gen = cpu_to_le32(inode->i_generation);
