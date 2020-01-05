@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, 2019 Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -132,7 +132,7 @@ static int q6lsm_callback(struct apr_client_data *data, void *priv)
 
 	if (client->cb)
 		client->cb(data->opcode, data->token, data->payload,
-			   client->priv);
+				data->payload_size, client->priv);
 
 	return 0;
 }
@@ -597,21 +597,31 @@ exit:
 	return rc;
 }
 
-int q6lsm_register_sound_model(struct lsm_client *client,
-			       enum lsm_detection_mode mode,
-			       bool detectfailure)
+int q6lsm_set_data(struct lsm_client *client,
+			   enum lsm_detection_mode mode,
+			   bool detectfailure)
 {
-	int rc;
-	struct lsm_cmd_reg_snd_model cmd;
+	int rc = 0;
 
-	memset(&cmd, 0, sizeof(cmd));
+	if (!client->confidence_levels) {
+		/*
+		 * It is possible that confidence levels are
+		 * not provided. This is not a error condition.
+		 * Return gracefully without any error
+		 */
+		pr_debug("%s: no conf levels to set\n",
+			__func__);
+		return rc;
+	}
+
 	if (mode == LSM_MODE_KEYWORD_ONLY_DETECTION) {
 		client->mode = 0x01;
 	} else if (mode == LSM_MODE_USER_KEYWORD_DETECTION) {
 		client->mode = 0x03;
 	} else {
 		pr_err("%s: Incorrect detection mode %d\n", __func__, mode);
-		return -EINVAL;
+		rc = -EINVAL;
+		goto err_ret;
 	}
 	client->mode |= detectfailure << 2;
 	client->connect_to_port = AFE_PORT_ID_SLIMBUS_MULTI_CHAN_5_TX;
@@ -620,11 +630,30 @@ int q6lsm_register_sound_model(struct lsm_client *client,
 	if (rc < 0) {
 		pr_err("%s: Failed to set lsm config params %d\n",
 			__func__, rc);
-		return rc;
+		goto err_ret;
 	}
 	rc = q6lsm_send_cal(client);
 	if (rc < 0) {
 		pr_err("%s: Failed to send calibration data %d\n",
+			__func__, rc);
+		goto err_ret;
+	}
+
+err_ret:
+	return rc;
+}
+
+int q6lsm_register_sound_model(struct lsm_client *client,
+			       enum lsm_detection_mode mode,
+			       bool detectfailure)
+{
+	int rc;
+	struct lsm_cmd_reg_snd_model cmd;
+
+	memset(&cmd, 0, sizeof(cmd));
+	rc = q6lsm_set_data(client, mode, detectfailure);
+	if (rc) {
+		pr_err("%s: Failed to set lsm data, err = %d\n",
 			__func__, rc);
 		return rc;
 	}
@@ -879,6 +908,8 @@ static int q6lsm_mmapcallback(struct apr_client_data *data, void *priv)
 		pr_debug("%s: SSR event received 0x%x, event 0x%x,\n"
 			 "proc 0x%x SID 0x%x\n", __func__, data->opcode,
 			 data->reset_event, data->reset_proc, sid);
+		if (sid < LSM_MIN_SESSION_ID || sid > LSM_MAX_SESSION_ID)
+			pr_err("%s: Invalid session %d\n", __func__, sid);
 		lsm_common.common_client[sid].lsm_cal_phy_addr = 0;
 		return 0;
 	}
@@ -921,7 +952,8 @@ static int q6lsm_mmapcallback(struct apr_client_data *data, void *priv)
 	}
 	if (client->cb)
 		client->cb(data->opcode, data->token,
-			   data->payload, client->priv);
+			data->payload, data->payload_size,
+			client->priv);
 	return 0;
 }
 
@@ -979,7 +1011,8 @@ int q6lsm_snd_model_buf_alloc(struct lsm_client *client, size_t len)
 				    client->sound_model.phys +
 				    client->sound_model.size);
 	client->lsm_cal_size = lsm_cal.cal_size;
-	memcpy((client->sound_model.data + pad_zero + client->sound_model.size),
+	memcpy((client->sound_model.data + pad_zero +
+		client->sound_model.size),
 	       (uint32_t *)lsm_cal.cal_kvaddr, client->lsm_cal_size);
 	pr_debug("%s: Copy cal start virt_addr %pK phy_addr %pK\n"
 			 "Offset cal virtual Addr %pK\n", __func__,

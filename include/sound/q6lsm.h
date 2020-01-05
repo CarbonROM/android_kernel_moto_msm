@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2019 Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,7 +27,7 @@ enum lsm_snd_model_in_use {
 };
 
 typedef void (*lsm_app_cb)(uint32_t opcode, uint32_t token,
-		       uint32_t *payload, void *priv);
+		       uint32_t *payload, uint16_t client_size, void *priv);
 
 struct lsm_sound_model {
 	dma_addr_t      phys;
@@ -62,6 +62,7 @@ struct lsm_client {
 	uint16_t	kw_sensitivity;
 	uint8_t		num_confidence_levels;
 	uint8_t		*confidence_levels;
+	bool		opened;
 	bool		started;
 	dma_addr_t	lsm_cal_phy_addr;
 	uint32_t	lsm_cal_size;
@@ -179,6 +180,9 @@ int q6lsm_close(struct lsm_client *client);
 int q6lsm_register_sound_model(struct lsm_client *client,
 			       enum lsm_detection_mode mode,
 			       bool detectfailure);
+int q6lsm_set_data(struct lsm_client *client,
+		   enum lsm_detection_mode mode,
+		   bool detectfailure);
 int q6lsm_deregister_sound_model(struct lsm_client *client);
 int q6lsm_set_kw_sensitivity_level(struct lsm_client *client,
 				   u16 minkeyword, u16 minuser);
