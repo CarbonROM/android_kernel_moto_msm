@@ -24,6 +24,7 @@
 #include <linux/spinlock.h>
 #include <linux/ratelimit.h>
 #include <linux/reboot.h>
+#include <linux/vmalloc.h>
 #include <asm/current.h>
 #include <mach/restart.h>
 #ifdef CONFIG_DIAG_OVER_USB
@@ -785,6 +786,9 @@ void extract_dci_pkt_rsp(unsigned char *buf, int len, int data_source,
 	struct diag_dci_buffer_t *rsp_buf = NULL;
 	struct dci_pkt_req_entry_t *req_entry = NULL;
 	unsigned char *temp = buf;
+	int save_req_uid = 0;
+	struct diag_dci_pkt_rsp_header_t pkt_rsp_header;
+	int header_len = sizeof(struct diag_dci_pkt_rsp_header_t);
 
 	if (!buf || len <= 0) {
 		pr_err("diag: Invalid pointer in %s\n", __func__);
@@ -836,6 +840,7 @@ void extract_dci_pkt_rsp(unsigned char *buf, int len, int data_source,
 		return;
 	}
 
+	save_req_uid = req_entry->uid;
 	/* Remove the headers and send only the response to this function */
 	delete_flag = diag_dci_remove_req_entry(temp, rsp_len, req_entry);
 	if (delete_flag < 0)
@@ -846,31 +851,32 @@ void extract_dci_pkt_rsp(unsigned char *buf, int len, int data_source,
 	mutex_lock(&rsp_buf->data_mutex);
 	/*
 	 * Check if we can fit the data in the rsp buffer. The total length of
-	 * the rsp is the rsp length (write_len) + DCI_PKT_RSP_TYPE header (int)
-	 * + field for length (int) + delete_flag (uint8_t)
+	 * the rsp is the rsp length (write_len) + dci response packet header
+	 * length (sizeof(struct diag_dci_pkt_rsp_header_t))
 	 */
-	if ((rsp_buf->data_len + 9 + rsp_len) > rsp_buf->capacity) {
+	if ((rsp_buf->data_len + header_len + rsp_len) > rsp_buf->capacity) {
 		pr_alert("diag: create capacity for pkt rsp\n");
-		rsp_buf->capacity += 9 + rsp_len;
-		temp_buf = krealloc(rsp_buf->data, rsp_buf->capacity,
-				    GFP_KERNEL);
+		temp_buf = vzalloc(rsp_buf->capacity + header_len + rsp_len);
 		if (!temp_buf) {
 			pr_err("diag: DCI realloc failed\n");
 			mutex_unlock(&rsp_buf->data_mutex);
 			return;
-		} else {
-			rsp_buf->data = temp_buf;
 		}
+		rsp_buf->capacity += header_len + rsp_len;
+		if (rsp_buf->capacity > rsp_buf->data_len)
+			memcpy(temp_buf, rsp_buf->data, rsp_buf->data_len);
+		vfree(rsp_buf->data);
+		rsp_buf->data = temp_buf;
 	}
-	*(int *)(rsp_buf->data + rsp_buf->data_len) = DCI_PKT_RSP_TYPE;
-	rsp_buf->data_len += sizeof(int);
+
+	/* Fill in packet response header information */
+	pkt_rsp_header.type = DCI_PKT_RSP_TYPE;
 	/* Packet Length = Response Length + Length of uid field (int) */
-	*(int *)(rsp_buf->data + rsp_buf->data_len) = rsp_len + sizeof(int);
-	rsp_buf->data_len += sizeof(int);
-	*(uint8_t *)(rsp_buf->data + rsp_buf->data_len) = delete_flag;
-	rsp_buf->data_len += sizeof(uint8_t);
-	*(int *)(rsp_buf->data + rsp_buf->data_len) = req_entry->uid;
-	rsp_buf->data_len += sizeof(int);
+	pkt_rsp_header.length = rsp_len + sizeof(int);
+	pkt_rsp_header.delete_flag = delete_flag;
+	pkt_rsp_header.uid = save_req_uid;
+	memcpy(rsp_buf->data + rsp_buf->data_len, &pkt_rsp_header, header_len);
+	rsp_buf->data_len += header_len;
 	memcpy(rsp_buf->data + rsp_buf->data_len, temp, rsp_len);
 	rsp_buf->data_len += rsp_len;
 	rsp_buf->data_source = data_source;
@@ -1742,9 +1748,9 @@ int diag_process_dci_transaction(unsigned char *buf, int len)
 	uint8_t *event_mask_ptr;
 	struct diag_dci_client_tbl *dci_entry = NULL;
 
-	if (!temp) {
-		pr_err("diag: Invalid buffer in %s\n", __func__);
-		return -ENOMEM;
+	if (!temp || len < sizeof(int)) {
+		pr_err("diag: Invalid input in %s\n", __func__);
+		return -EINVAL;
 	}
 
 	/* This is Pkt request/response transaction */
@@ -1795,7 +1801,7 @@ int diag_process_dci_transaction(unsigned char *buf, int len)
 		count = 0; /* iterator for extracting log codes */
 
 		while (count < num_codes) {
-			if (read_len >= USER_SPACE_DATA) {
+			if (read_len + sizeof(uint16_t) > len) {
 				pr_err("diag: dci: Invalid length for log type in %s",
 								__func__);
 				return -EIO;
@@ -1900,7 +1906,7 @@ int diag_process_dci_transaction(unsigned char *buf, int len)
 		pr_debug("diag: head of dci event mask %p\n", event_mask_ptr);
 		count = 0; /* iterator for extracting log codes */
 		while (count < num_codes) {
-			if (read_len >= USER_SPACE_DATA) {
+			if (read_len + sizeof(int) > len) {
 				pr_err("diag: dci: Invalid length for event type in %s",
 								__func__);
 				return -EIO;

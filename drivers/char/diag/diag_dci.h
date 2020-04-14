@@ -26,7 +26,7 @@
 #define MAX_EVENT_SIZE		512
 #define DCI_CLIENT_INDEX_INVALID -1
 #define DCI_PKT_REQ_MIN_LEN		9
-#define DCI_LOG_CON_MIN_LEN		14
+#define DCI_LOG_CON_MIN_LEN		16
 #define DCI_EVENT_CON_MIN_LEN		16
 
 #define DIAG_DATA_TYPE		1
@@ -165,6 +165,13 @@ struct diag_log_event_stats {
 	int client_id;
 	uint16_t code;
 	int is_set;
+} __packed;
+
+struct diag_dci_pkt_rsp_header_t {
+	int type;
+	int length;
+	uint8_t delete_flag;
+	int uid;
 } __packed;
 
 struct diag_dci_pkt_header_t {
