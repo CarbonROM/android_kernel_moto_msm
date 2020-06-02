@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, 2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -510,8 +510,8 @@ int adm_get_params(int port_id, uint32_t module_id, uint32_t param_id,
 	}
 	if ((params_data) &&
 	    (ARRAY_SIZE(adm_get_parameters) > 0) &&
-	    (ARRAY_SIZE(adm_get_parameters) >= 1+adm_get_parameters[0]) &&
-	    (params_length/sizeof(int) >= adm_get_parameters[0])) {
+	    (ARRAY_SIZE(adm_get_parameters) >= (1+adm_get_parameters[0])) &&
+	    (params_length/sizeof(uint32_t) >= adm_get_parameters[0])) {
 		for (i = 0; i < adm_get_parameters[0]; i++)
 			params_data[i] = adm_get_parameters[1+i];
 	} else {
@@ -688,7 +688,7 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 	}
 
 	adm_callback_debug_print(data);
-	if (data->payload_size) {
+	if (data->payload_size >= sizeof(uint32_t)) {
 		index = q6audio_get_port_index(data->token);
 		if (index < 0 || index >= AFE_MAX_PORTS) {
 			pr_err("%s: invalid port idx %d token %d\n",
@@ -698,6 +698,14 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 		if (data->opcode == APR_BASIC_RSP_RESULT) {
 			pr_debug("%s: APR_BASIC_RSP_RESULT id 0x%x\n",
 				__func__, payload[0]);
+			if (!(payload[0] == ADM_CMD_SET_PP_PARAMS_V5)) {
+				if (data->payload_size <
+						(2 * sizeof(uint32_t))) {
+					pr_err("%s: Invalid payload size %d\n",
+						__func__, data->payload_size);
+					return 0;
+				}
+			}
 			if (payload[1] != 0) {
 				pr_err("%s: cmd = 0x%x returned error = 0x%x\n",
 					__func__, payload[0], payload[1]);
@@ -778,6 +786,14 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 			struct adm_cmd_rsp_device_open_v5 *open =
 			(struct adm_cmd_rsp_device_open_v5 *)data->payload;
 
+			if (data->payload_size <
+				sizeof(struct adm_cmd_rsp_device_open_v5)) {
+				pr_err("%s: Invalid payload size %d\n",
+					__func__, data->payload_size);
+				return 0;
+			}
+			open =
+			    (struct adm_cmd_rsp_device_open_v5 *)data->payload;
 			if (open->copp_id == INVALID_COPP_ID) {
 				pr_err("%s: invalid coppid rxed %d\n",
 					__func__, open->copp_id);
@@ -807,18 +823,29 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 					data->payload_size))
 				break;
 
-			if ((payload[0] == 0) &&
-			    (data->payload_size > (4 * sizeof(*payload))) &&
-			    (data->payload_size/sizeof(*payload)-4 >= payload[3]) &&
-			    (ARRAY_SIZE(adm_get_parameters) > 0) &&
-			    (ARRAY_SIZE(adm_get_parameters)-1 >= payload[3])) {
-			                adm_get_parameters[0] = payload[3];
-					pr_debug("GET_PP PARAM:received parameter length: 0x%x\n",
-						adm_get_parameters[0]);
-					/* storing param size then params */
-					for (i = 0; i < payload[3]; i++)
-						adm_get_parameters[1+i] =
-								payload[4+i];
+			/* payload[3] is the param size, check if payload */
+			/* is big enough and has a valid param size */
+			if ((payload[0] == 0) && (data->payload_size >
+				(4 * sizeof(*payload))) &&
+				(data->payload_size -
+				(4 * sizeof(*payload)) >=
+				payload[3]) &&
+				(ARRAY_SIZE(adm_get_parameters) >
+				0) &&
+				(ARRAY_SIZE(adm_get_parameters)-1 >=
+				payload[3])) {
+				adm_get_parameters[0] = payload[3] /
+							sizeof(uint32_t);
+				/*
+				 * payload[3] is param_size which is
+				 * expressed in number of bytes
+				 */
+				pr_debug("%s: GET_PP PARAM:received parameter length: 0x%x\n",
+					__func__, adm_get_parameters[0]);
+				/* storing param size then params */
+				for (i = 0; i < payload[3] /
+						sizeof(uint32_t); i++)
+					adm_get_parameters[1+i] = payload[4+i];
 			} else {
 				adm_get_parameters[0] = -1;
 				pr_err("%s: GET_PP_PARAMS failed, setting size to %d\n",
@@ -834,21 +861,32 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 				pr_err("%s: ADM_CMDRSP_GET_PP_TOPO_MODULE_LIST",
 					 __func__);
 				pr_err(":err = 0x%x\n", payload[0]);
-			} else if (payload[1] >
-				   ((ADM_GET_TOPO_MODULE_LIST_LENGTH /
-				   sizeof(uint32_t)) - 1)) {
-				pr_err("%s: ADM_CMDRSP_GET_PP_TOPO_MODULE_LIST",
-					 __func__);
-				pr_err(":size = %d\n", payload[1]);
-			} else {
-				pr_debug("%s:Num modules payload[1] %d\n",
-					 __func__, payload[1]);
-				adm_module_topo_list[0] = payload[1];
-				for (i = 1; i <= payload[1]; i++) {
-					adm_module_topo_list[i] = payload[1+i];
-					pr_debug("%s:payload[%d] = %x\n",
-						 __func__, (i+1), payload[1+i]);
+			} else if (data->payload_size >=
+				   (2 * sizeof(uint32_t))) {
+				if ((payload[1] >
+					   ((ADM_GET_TOPO_MODULE_LIST_LENGTH /
+					   sizeof(uint32_t)) - 1))  ||
+				((data->payload_size -
+				(2 *  sizeof(uint32_t))) <
+				(payload[1] * sizeof(uint32_t))))  {
+					pr_err("%s: ADM_CMDRSP_GET_PP_TOPO_MODULE_LIST",
+						 __func__);
+					pr_err(":size = %d\n", payload[1]);
+				} else {
+					pr_debug("%s:Num modules payload[1] %d\n",
+						 __func__, payload[1]);
+					adm_module_topo_list[0] = payload[1];
+					for (i = 1; i <= payload[1]; i++) {
+						adm_module_topo_list[i] =
+							payload[1+i];
+						pr_debug("%s:payload[%d] = %x\n",
+							__func__, (i+1),
+							payload[1+i]);
+					}
 				}
+			} else {
+				pr_err("%s: Invalid payload size %d\n",
+				       __func__, data->payload_size);
 			}
 			atomic_set(&this_adm.copp_stat[index], 1);
 			wake_up(&this_adm.wait[index]);
@@ -915,8 +953,7 @@ void send_adm_custom_topology(int port_id)
 
 	adm_top.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 		APR_HDR_LEN(20), APR_PKT_VER);
-	adm_top.hdr.pkt_size = APR_PKT_SIZE(APR_HDR_SIZE,
-		sizeof(adm_top));
+	adm_top.hdr.pkt_size = sizeof(adm_top);
 	adm_top.hdr.src_svc = APR_SVC_ADM;
 	adm_top.hdr.src_domain = APR_DOMAIN_APPS;
 	adm_top.hdr.src_port = port_id;
@@ -986,8 +1023,7 @@ static int send_adm_cal_block(int port_id, struct acdb_cal_block *aud_cal,
 
 	adm_params.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 		APR_HDR_LEN(20), APR_PKT_VER);
-	adm_params.hdr.pkt_size = APR_PKT_SIZE(APR_HDR_SIZE,
-		sizeof(adm_params));
+	adm_params.hdr.pkt_size = sizeof(adm_params);
 	adm_params.hdr.src_svc = APR_SVC_ADM;
 	adm_params.hdr.src_domain = APR_DOMAIN_APPS;
 	adm_params.hdr.src_port = port_id;
