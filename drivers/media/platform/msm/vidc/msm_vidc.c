@@ -833,6 +833,7 @@ int msm_vidc_release_buffers(void *instance, int buffer_type)
 	}
 
 free_and_unmap:
+	mutex_lock(&inst->sync_lock);
 	mutex_lock(&inst->lock);
 	list_for_each_safe(ptr, next, &inst->registered_bufs) {
 		bi = list_entry(ptr, struct buffer_info, list);
@@ -853,6 +854,7 @@ free_and_unmap:
 		}
 	}
 	mutex_unlock(&inst->lock);
+	mutex_unlock(&inst->sync_lock);
 	return rc;
 }
 EXPORT_SYMBOL(msm_vidc_release_buffers);
@@ -1418,7 +1420,7 @@ int msm_vidc_close(void *instance)
 	int rc = 0;
 	int i;
 
-	if (!inst)
+	if (!inst || !inst->core)
 		return -EINVAL;
 
 	v4l2_fh_del(&inst->event_handler);
@@ -1436,6 +1438,8 @@ int msm_vidc_close(void *instance)
 	}
 
 	core = inst->core;
+	msm_comm_session_clean(inst);
+
 	mutex_lock(&core->lock);
 	list_for_each_safe(ptr, next, &core->instances) {
 		temp = list_entry(ptr, struct msm_vidc_inst, list);
