@@ -142,9 +142,10 @@ struct restart_log {
 /**
  * struct subsys_device - subsystem device
  * @desc: subsystem descriptor
- * @wake_lock: prevents suspend during subsystem_restart()
- * @wlname: name of @wake_lock
  * @work: context for subsystem_restart_wq_func() for this device
+ * @ssr_wlock: prevents suspend during subsystem_restart()
+ * @wlname: name of wakeup source
+ * @device_restart_work: work struct for device restart
  * @track: state tracking and locking
  * @notify: subsys notify handle
  * @dev: device
@@ -162,10 +163,10 @@ struct restart_log {
  */
 struct subsys_device {
 	struct subsys_desc *desc;
-	struct wake_lock wake_lock;
-	char wlname[64];
 	struct work_struct work;
-
+	struct wakeup_source ssr_wlock;
+	char wlname[64];
+	struct work_struct device_restart_work;
 	struct subsys_tracking track;
 
 	void *notify;
@@ -811,7 +812,7 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 
 	spin_lock_irqsave(&track->s_lock, flags);
 	track->p_state = SUBSYS_NORMAL;
-	wake_unlock(&dev->wake_lock);
+	__pm_relax(&dev->ssr_wlock);
 	spin_unlock_irqrestore(&track->s_lock, flags);
 }
 
@@ -835,7 +836,7 @@ static void __subsystem_restart_dev(struct subsys_device *dev)
 		if (dev->track.state == SUBSYS_ONLINE &&
 		    track->p_state != SUBSYS_RESTARTING) {
 			track->p_state = SUBSYS_CRASHED;
-			wake_lock(&dev->wake_lock);
+			__pm_stay_awake(&dev->ssr_wlock);
 			queue_work(ssr_wq, &dev->work);
 		} else {
 			pr_err("Subsystem %s crashed during SSR!", name);
@@ -843,6 +844,16 @@ static void __subsystem_restart_dev(struct subsys_device *dev)
 		}
 	}
 	spin_unlock_irqrestore(&track->s_lock, flags);
+}
+
+static void device_restart_work_hdlr(struct work_struct *work)
+{
+	struct subsys_device *dev = container_of(work, struct subsys_device,
+							device_restart_work);
+
+	notify_each_subsys_device(&dev, 1, SUBSYS_SOC_RESET, NULL);
+	panic("subsys-restart: Resetting the SoC - %s crashed.",
+							dev->desc->name);
 }
 
 int subsystem_restart_dev(struct subsys_device *dev)
@@ -879,8 +890,9 @@ int subsystem_restart_dev(struct subsys_device *dev)
 		__subsystem_restart_dev(dev);
 		break;
 	case RESET_SOC:
-		panic("subsys-restart: Resetting the SoC - %s crashed.", name);
-		break;
+		__pm_stay_awake(&dev->ssr_wlock);
+		schedule_work(&dev->device_restart_work);
+		return 0;
 	default:
 		panic("subsys-restart: Unknown restart level!\n");
 		break;
@@ -1100,7 +1112,7 @@ static void subsys_device_release(struct device *dev)
 {
 	struct subsys_device *subsys = to_subsys(dev);
 
-	wake_lock_destroy(&subsys->wake_lock);
+	wakeup_source_trash(&subsys->ssr_wlock);
 	mutex_destroy(&subsys->track.lock);
 	ida_simple_remove(&subsys_ida, subsys->id);
 	kfree(subsys);
@@ -1405,8 +1417,9 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 	subsys->notify = subsys_notif_add_subsys(desc->name);
 
 	snprintf(subsys->wlname, sizeof(subsys->wlname), "ssr(%s)", desc->name);
-	wake_lock_init(&subsys->wake_lock, WAKE_LOCK_SUSPEND, subsys->wlname);
+	wakeup_source_init(&subsys->ssr_wlock, subsys->wlname);
 	INIT_WORK(&subsys->work, subsystem_restart_wq_func);
+	INIT_WORK(&subsys->device_restart_work, device_restart_work_hdlr);
 	spin_lock_init(&subsys->track.s_lock);
 
 	subsys->id = ida_simple_get(&subsys_ida, 0, 0, GFP_KERNEL);
@@ -1459,7 +1472,7 @@ err_debugfs:
 	mutex_destroy(&subsys->track.lock);
 	ida_simple_remove(&subsys_ida, subsys->id);
 err_ida:
-	wake_lock_destroy(&subsys->wake_lock);
+	wakeup_source_trash(&subsys->ssr_wlock);
 	kfree(subsys);
 	return ERR_PTR(ret);
 }

@@ -318,11 +318,14 @@ out:
 static void ion_secure_cma_free_chunk(struct ion_cma_secure_heap *sheap,
 					struct ion_cma_alloc_chunk *chunk)
 {
+	DEFINE_DMA_ATTRS(attrs);
+
+	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
 	/* This region is 'allocated' and not available to allocate from */
 	bitmap_set(sheap->bitmap, (chunk->handle - sheap->base) >> PAGE_SHIFT,
 			chunk->chunk_size >> PAGE_SHIFT);
-	dma_free_coherent(sheap->dev, chunk->chunk_size, chunk->cpu_addr,
-				chunk->handle);
+	dma_free_attrs(sheap->dev, chunk->chunk_size, chunk->cpu_addr,
+				chunk->handle, &attrs);
 	atomic_sub(chunk->chunk_size, &sheap->total_pool_size);
 	list_del(&chunk->entry);
 	kfree(chunk);
@@ -375,13 +378,6 @@ static int ion_secure_cma_shrinker(struct shrinker *shrinker,
 	int nr_to_scan = sc->nr_to_scan;
 
 	if (nr_to_scan == 0)
-		return atomic_read(&sheap->total_pool_size);
-
-	/*
-	 * CMA pages can only be used for movable allocation so don't free if
-	 * the allocation isn't movable
-	 */
-	if (!(sc->gfp_mask & __GFP_MOVABLE))
 		return atomic_read(&sheap->total_pool_size);
 
 	/*
@@ -515,6 +511,12 @@ static int ion_secure_cma_allocate(struct ion_heap *heap,
 		return -ENOMEM;
 	}
 
+	if (!IS_ALIGNED(len, SZ_1M)) {
+		pr_err("%s: length of allocation from %s must be a multiple of 1MB\n",
+			__func__, heap->name);
+		return -ENOMEM;
+	}
+
 
 	buf = __ion_secure_cma_allocate(heap, buffer, len, align, flags);
 
@@ -628,7 +630,7 @@ static int ion_secure_cma_print_debug(struct ion_heap *heap, struct seq_file *s,
 		seq_printf(s, "\nMemory Map\n");
 		seq_printf(s, "%16.s %14.s %14.s %14.s\n",
 			   "client", "start address", "end address",
-			   "size (hex)");
+			   "size");
 
 		list_for_each_entry(data, mem_map, node) {
 			const char *client_name = "(null)";
@@ -637,15 +639,15 @@ static int ion_secure_cma_print_debug(struct ion_heap *heap, struct seq_file *s,
 			if (data->client_name)
 				client_name = data->client_name;
 
-			seq_printf(s, "%16.s %14pa %14pa %14lu (%lx)\n",
+			seq_printf(s, "%16.s 0x%14pa 0x%14pa %14lu (0x%lx)\n",
 				   client_name, &data->addr,
 				   &data->addr_end,
 				   data->size, data->size);
 		}
 	}
-	seq_printf(s, "Total allocated: %x\n",
+	seq_printf(s, "Total allocated: 0x%x\n",
 				atomic_read(&sheap->total_allocated));
-	seq_printf(s, "Total pool size: %x\n",
+	seq_printf(s, "Total pool size: 0x%x\n",
 				atomic_read(&sheap->total_pool_size));
 	return 0;
 }

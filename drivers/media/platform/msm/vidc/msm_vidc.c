@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1406,7 +1406,9 @@ static void cleanup_instance(struct msm_vidc_inst *inst)
 		mutex_unlock(&inst->lock);
 		msm_smem_delete_client(inst->mem_client);
 		debugfs_remove_recursive(inst->debugfs_root);
-		WARN_ON(!list_empty(&inst->pending_getpropq));
+
+		WARN_ON(!list_empty(&inst->pending_getpropq)
+			&& (msm_vidc_debug & VIDC_INFO));
 	}
 }
 
